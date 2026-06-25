@@ -45,5 +45,14 @@ export function createRouter(toolRegistry) {
     }
   });
 
+  router.get("/scheduler/tasks", async (req, res) => {
+    const storage = global.storageInstance;
+    if (!storage) {
+      return res.status(503).json({ error: "Планировщик не инициализирован" });
+    }
+    const tasks = await storage.getAll();
+    res.json(tasks);
+  });
+
   return router;
 }

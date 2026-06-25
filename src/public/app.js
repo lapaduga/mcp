@@ -267,15 +267,58 @@ async function callTool(name, args) {
   } finally {
     spinner.classList.add("hidden");
     callBtn.disabled = false;
+    fetchSchedulerTasks();
   }
+}
+
+async function fetchSchedulerTasks() {
+  try {
+    const res = await fetch(`${BASE}/api/scheduler/tasks`);
+    if (!res.ok) {
+      if (res.status === 503) return;
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const tasks = await res.json();
+    renderSchedulerTasks(tasks);
+  } catch (err) {
+    console.debug("Планировщик недоступен:", err.message);
+  }
+}
+
+function renderSchedulerTasks(tasks) {
+  const list = $("#taskList");
+  if (!list) return;
+
+  if (tasks.length === 0) {
+    list.innerHTML = "<div class='task-empty'>Нет задач</div>";
+    return;
+  }
+
+  list.innerHTML = tasks
+    .map((t) => {
+      const status = t.status === "completed" ? "\u2705" : "\u23F3";
+      const typeLabel =
+        t.type === "reminder" ? "Напоминание" : "Периодическая";
+      const next = t.executeAt
+        ? new Date(t.executeAt).toLocaleTimeString()
+        : "\u2014";
+      return `<div class="task-item">
+        <div class="task-header">${status} <strong>${typeLabel}</strong></div>
+        <div class="task-message">${t.message}</div>
+        <div class="task-meta">Следующий: ${next}</div>
+      </div>`;
+    })
+    .join("");
 }
 
 function init() {
   setStatus(null);
 
   fetchTools();
+  fetchSchedulerTasks();
 
   setInterval(fetchTools, POLL_INTERVAL);
+  setInterval(fetchSchedulerTasks, 5000);
 
   $("#toolForm").addEventListener("submit", async (e) => {
     e.preventDefault();
