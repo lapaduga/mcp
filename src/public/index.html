@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Tools Hub</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23252526'/%3E%3Cpath d='M8 10 L16 6 L24 10 L24 22 L16 26 L8 22Z' fill='none' stroke='%23007acc' stroke-width='2' stroke-linejoin='round'/%3E%3Cpath d='M12 13 L16 20 L20 13 L16 17Z' fill='%23007acc'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>MCP Tools Hub</h1>
+    <div class="status-bar">
+      <span class="status-indicator" id="statusIndicator"></span>
+      <span id="statusText">Подключение...</span>
+    </div>
+  </header>
+
+  <main>
+    <aside class="sidebar" id="sidebar">
+      <h2>Инструменты</h2>
+      <div id="toolList" class="tool-list"></div>
+    </aside>
+
+    <section class="content" id="content">
+      <div class="placeholder" id="placeholder">
+        <p>Выберите инструмент из списка слева</p>
+      </div>
+
+      <div class="tool-detail hidden" id="toolDetail">
+        <h2 id="detailName"></h2>
+        <p class="detail-description" id="detailDescription"></p>
+
+        <div class="detail-schema">
+          <h3>JSON Schema</h3>
+          <pre id="detailSchema"></pre>
+        </div>
+
+        <form id="toolForm" class="tool-form">
+          <div id="formFields"></div>
+          <button type="submit" id="callButton" class="btn primary">
+            Вызвать
+          </button>
+        </form>
+
+        <div class="result-area hidden" id="resultArea">
+          <h3>Результат</h3>
+          <pre id="resultOutput"></pre>
+        </div>
+
+        <div class="error-area hidden" id="errorArea">
+          <h3>Ошибка</h3>
+          <pre id="errorOutput"></pre>
+        </div>
+
+        <div class="spinner hidden" id="spinner">Выполнение...</div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <h3>Лог событий</h3>
+    <div class="log-container" id="logContainer"></div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

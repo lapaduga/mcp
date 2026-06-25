@@ -1,0 +1,16 @@
+{
+  "name": "mcp-tools-hub",
+  "version": "1.0.0",
+  "description": "MCP-сервер с веб-интерфейсом для просмотра и вызова инструментов",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/integration.test.js",
+    "test:all": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.0",
+    "dotenv": "^16.4.7"
+  }
+}
