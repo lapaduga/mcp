@@ -34,6 +34,7 @@ export async function createApp() {
   // Обратная совместимость для инструментов, использующих global.*
   global.storageInstance = taskStorage;
   global.schedulerInstance = scheduler;
+  global.registryInstance = registry;
 
   await registry.loadTools();
   logger.info(`Загружено локальных инструментов: ${registry.getTools().length}`);
@@ -114,6 +115,13 @@ function buildChatSystemPrompt(tools) {
     "ФОРМАТ callback.messages (строго):",
     "Это массив ДИАЛОГОВЫХ сообщений {role, content} для LLM, а не одна команда.",
     "ОБЯЗАТЕЛЬНО добавь system-сообщение первым с инструкцией вызвать инструменты через TOOL_CALL.",
+    "",
+    "ПРАВИЛО ИМЁН ИНСТРУМЕНТОВ (критично):",
+    "При создании create_reminder в callback.messages ты ДОЛЖЕН использовать ТОЧНЫЕ имена инструментов из списка выше.",
+    "- Для сложения: \"add\" (внешний:math)",
+    "- Для повтора текста: \"echo\" (внешний:math)",
+    "- Для погоды: \"get_weather\" (локальный)",
+    "НЕ придумывай имена вроде \"get-sum\", \"calculate\", \"sum\" — их НЕТ в списке.",
     "",
     "Пример правильного callback:",
     '  {"type":"llm_chat","messages":[{"role":"system","content":"Ты — ассистент с доступом к инструментам. Вызови get_weather для Москвы через TOOL_CALL, затем ответь пользователю по-русски."},{"role":"user","content":"Проверь погоду"}],"sessionId":"..."}',

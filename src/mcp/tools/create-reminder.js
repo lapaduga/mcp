@@ -34,7 +34,18 @@ export const inputSchema = {
   required: ["message", "delaySeconds"],
 };
 
-const DEFAULT_SYSTEM_PROMPT = "Ты — ассистент с доступом к инструментам. Выполни задачу пользователя, вызвав нужные инструменты через TOOL_CALL: {\"tool\":\"имя\",\"arguments\":{}}. После получения результата ответь пользователю по-русски.";
+function buildSystemPrompt() {
+  const registry = global.registryInstance;
+  let toolsList = "";
+  if (registry) {
+    const tools = registry.getTools();
+    toolsList = "\n\nДоступные инструменты:\n" + tools.map((t) => {
+      const source = t.isExternal ? `внешний:${t.source}` : "локальный";
+      return `- ${t.name} (${source}): ${(t.description || "Нет описания").slice(0, 80)}`;
+    }).join("\n");
+  }
+  return `Ты — ассистент с доступом к инструментам. Выполни задачу пользователя, вызвав нужные инструменты через TOOL_CALL: {"tool":"имя","arguments":{}}. Используй ТОЧНЫЕ имена инструментов — не придумывай свои. После получения результата ответь пользователю по-русски.${toolsList}`;
+}
 
 export async function handler(args) {
   const { message, delaySeconds, callback } = args ?? {};
@@ -57,7 +68,7 @@ export async function handler(args) {
       processedCallback = {
         ...processedCallback,
         messages: [
-          { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+          { role: "system", content: buildSystemPrompt() },
           ...processedCallback.messages,
         ],
       };
