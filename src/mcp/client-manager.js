@@ -44,6 +44,17 @@ export class McpClientManager {
     return tools;
   }
 
+  async healthCheck(id) {
+    const entry = this._clients.get(id);
+    if (!entry) return false;
+    try {
+      await entry.client.listTools();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async disconnectAll() {
     for (const [id, { client }] of this._clients) {
       try {

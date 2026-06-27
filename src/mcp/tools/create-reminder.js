@@ -34,6 +34,8 @@ export const inputSchema = {
   required: ["message", "delaySeconds"],
 };
 
+const DEFAULT_SYSTEM_PROMPT = "Ты — ассистент с доступом к инструментам. Выполни задачу пользователя, вызвав нужные инструменты через TOOL_CALL: {\"tool\":\"имя\",\"arguments\":{}}. После получения результата ответь пользователю по-русски.";
+
 export async function handler(args) {
   const { message, delaySeconds, callback } = args ?? {};
   const storage = global.storageInstance;
@@ -47,6 +49,21 @@ export async function handler(args) {
     throw new Error("delaySeconds должен быть от 1 до 3600");
   }
 
+  // Авто-обертка callback: если нет system-сообщения — добавляем (immutable)
+  let processedCallback = callback || null;
+  if (processedCallback?.type === "llm_chat" && Array.isArray(processedCallback.messages)) {
+    const hasSystem = processedCallback.messages.some((m) => m.role === "system");
+    if (!hasSystem) {
+      processedCallback = {
+        ...processedCallback,
+        messages: [
+          { role: "system", content: DEFAULT_SYSTEM_PROMPT },
+          ...processedCallback.messages,
+        ],
+      };
+    }
+  }
+
   const id = "reminder_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
   const executeAt = Date.now() + delaySeconds * 1000;
 
@@ -58,12 +75,12 @@ export async function handler(args) {
     executeAt,
     status: "pending",
     createdAt: Date.now(),
-    callback: callback || null,
+    callback: processedCallback,
   });
 
-  const hasCallback = callback && callback.type === "llm_chat" && Array.isArray(callback.messages);
+  const hasCallback = processedCallback?.type === "llm_chat" && Array.isArray(processedCallback.messages);
   const chainText = hasCallback
-    ? `\nCallback-цепочка активирована (${callback.messages.length} сообщений контекста)`
+    ? `\nCallback-цепочка активирована (${processedCallback.messages.length} сообщений контекста)`
     : "";
 
   return {

@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { config } from "./src/shared/config.js";
 import Logger from "./src/shared/logger.js";
+import { AppContext } from "./src/shared/context.js";
 import { registry } from "./src/mcp/tools/registry.js";
 import { createMcpServer } from "./src/mcp/server.js";
 import { setupSseTransport } from "./src/mcp/transports/sse.js";
@@ -15,27 +16,22 @@ import { Scheduler } from "./src/scheduler/scheduler.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = new Logger(config.logLevel);
 
-// SSE-клиенты для realtime-пуша в чат
-global.chatClients = new Map();
-global.pushToChat = (sessionId, data) => {
-  const client = global.chatClients.get(sessionId);
-  if (client) {
-    try {
-      client.write(`data: ${JSON.stringify(data)}\n\n`);
-    } catch (err) {
-      logger.warn(`SSE send error: ${err.message}`);
-    }
-  }
-};
+const ctx = new AppContext();
+ctx.logger = logger;
+ctx.registry = registry;
 
 export async function createApp() {
   const clientManager = new McpClientManager(logger);
   registry.setClientManager(clientManager);
+  ctx.clientManager = clientManager;
 
   const taskStorage = new TaskStorage(logger);
-  const scheduler = new Scheduler(taskStorage, logger);
+  const scheduler = new Scheduler(taskStorage, logger, ctx);
   scheduler.start();
 
+  ctx.storage = taskStorage;
+  ctx.scheduler = scheduler;
+  // Обратная совместимость для инструментов, использующих global.*
   global.storageInstance = taskStorage;
   global.schedulerInstance = scheduler;
 
@@ -54,7 +50,7 @@ export async function createApp() {
   app.use(express.static(join(__dirname, "src", "public")));
 
   setupSseTransport(app, mcpServer, logger);
-  app.use("/api", createRouter(registry));
+  app.use("/api", createRouter(ctx));
 
   // SSE endpoint для realtime-уведомлений чата
   app.get("/api/chat/stream", (req, res) => {
@@ -65,11 +61,11 @@ export async function createApp() {
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
 
-    global.chatClients.set(sessionId, res);
+    ctx.chatClients.set(sessionId, res);
     logger.info(`SSE клиент подключён: ${sessionId}`);
 
     req.on("close", () => {
-      global.chatClients.delete(sessionId);
+      ctx.chatClients.delete(sessionId);
       logger.info(`SSE клиент отключён: ${sessionId}`);
     });
   });
@@ -81,7 +77,7 @@ export async function createApp() {
       if (!messages || !Array.isArray(messages)) {
         return res.status(400).json({ error: "Поле 'messages' обязательно" });
       }
-      const result = await processChatMessage(messages, registry, logger, sessionId || null);
+      const result = await processChatMessage(ctx, messages, sessionId || null, 5);
       res.json(result);
     } catch (err) {
       logger.error(`Ошибка чата: ${err.message}`);
@@ -90,8 +86,8 @@ export async function createApp() {
   });
 
   // Экспортируем processChatMessage для scheduler callback
-  global.chatProcessMessage = (msgs, sessionId) =>
-    processChatMessage(msgs, registry, logger, sessionId, true);
+  ctx.chatProcessMessage = (msgs, sessionId) =>
+    processChatMessage(ctx, msgs, sessionId, 5);
 
   logger.info(`Всего инструментов: ${registry.getTools().length}`);
 
@@ -102,22 +98,58 @@ function buildChatSystemPrompt(tools) {
   const lines = [
     "Ты — ассистент с доступом к инструментам.",
     "",
-    "ПРАВИЛО ЦЕПОЧКИ (CHAIN / PIPELINE):",
-    "Если пользователь просит сделать что-то с задержкой (\"через N секунд\", \"через N минут\") — используй create_reminder с callback.",
+    "ПРАВИЛО ЦЕПОЧКИ (ORCHESTRATION):",
+    "Ты можешь выполнять несколько шагов последовательно, вызывая инструменты один за другим.",
+    "После КАЖДОГО вызова инструмента ты получишь результат. Проанализируй его и реши:",
+    "  — Нужен ли следующий шаг (вызвать ещё один инструмент через TOOL_CALL)?",
+    "  — Или задача решена (ответь пользователю по-русски)?",
     "",
-    "В callback укажи messages — контекст для LLM, который выполнит задачу после срабатывания.",
-    "Пример для запроса \"погода через 10 секунд и сохрани\":",
-    'TOOL_CALL: {"tool": "create_reminder", "arguments": {"message": "Запросить погоду и сохранить", "delaySeconds": 10, "callback": {"type": "llm_chat", "messages": [{"role": "system", "content": "Сработало отложенное задание. Шаги: 1) get_weather(city=\\"Челябинск\\"). 2) save_note(title=\\"Погода Челябинск\\", content=результат погоды). 3) Ответь пользователю."}]}}}',
+    "ВЕТВЛЕНИЕ (BRANCHING):",
+    "На основе результата предыдущего шага ты можешь выбирать разные следующие шаги.",
+    "Пример: получив температуру, ты можешь вызвать save_note с 'Тепло' если > 15°C, или 'Холодно' если <= 15°C.",
+    "",
+    "ОТЛОЖЕННЫЕ ЗАДАЧИ:",
+    "Если пользователь просит сделать что-то через N секунд/минут — используй create_reminder с callback.",
+    "",
+    "ФОРМАТ callback.messages (строго):",
+    "Это массив ДИАЛОГОВЫХ сообщений {role, content} для LLM, а не одна команда.",
+    "ОБЯЗАТЕЛЬНО добавь system-сообщение первым с инструкцией вызвать инструменты через TOOL_CALL.",
+    "",
+    "Пример правильного callback:",
+    '  {"type":"llm_chat","messages":[{"role":"system","content":"Ты — ассистент с доступом к инструментам. Вызови get_weather для Москвы через TOOL_CALL, затем ответь пользователю по-русски."},{"role":"user","content":"Проверь погоду"}],"sessionId":"..."}',
     "",
     "ФОРМАТ ВЫЗОВА ИНСТРУМЕНТА:",
     "TOOL_CALL: {\"tool\": \"имя_инструмента\", \"arguments\": {}}",
-    "Без какого-либо дополнительного текста до или после.",
+    "Несколько TOOL_CALL в одном ответе = параллельные вызовы (они выполняются одновременно).",
+    "",
+    "ВАЖНО: Parallel calls (несколько TOOL_CALL в одном ответе) — это НЕ конец цепочки. Продолжай вызывать инструменты на следующих шагах, пока все задачи пользователя не выполнены.",
+    "",
+    "Пример 5 (parallel calls + продолжение):",
+    'Пользователь: "Проверь погоду в Москве и Питере, сохрани результат в заметку"',
+    "→ TOOL_CALL: {\"tool\": \"get_weather\", \"arguments\": {\"city\": \"Москва\"}}",
+    "TOOL_CALL: {\"tool\": \"get_weather\", \"arguments\": {\"city\": \"Питер\"}}",
+    "[получаешь результаты обоих вызовов]",
+    "→ TOOL_CALL: {\"tool\": \"save_note\", \"arguments\": {\"title\": \"Погода\", \"content\": \"Москва: ... Питер: ...\"}}",
+    "→ Ответ пользователю: \"Готово! Погода сохранена в заметку.\"",
+    "",
+    "Пример 6 (полный микс):",
+    'Пользователь: "Поприветствуй меня как Иван, проверь погоду в Москве и Питере, сохрани результат в заметку, и создай напоминание через 3 секунды"',
+    "→ Шаг 1 (parallel):",
+    "TOOL_CALL: {\"tool\": \"hello_world\", \"arguments\": {\"name\": \"Иван\"}}",
+    "TOOL_CALL: {\"tool\": \"get_weather\", \"arguments\": {\"city\": \"Москва\"}}",
+    "TOOL_CALL: {\"tool\": \"get_weather\", \"arguments\": {\"city\": \"Питер\"}}",
+    "→ Шаг 2:",
+    "TOOL_CALL: {\"tool\": \"save_note\", \"arguments\": {\"title\": \"Погода\", \"content\": \"...\"}}",
+    "→ Шаг 3:",
+    "TOOL_CALL: {\"tool\": \"create_reminder\", \"arguments\": {\"message\": \"Проверь сводку\", \"delaySeconds\": 3, \"callback\": {\"type\": \"llm_chat\", \"messages\": [{\"role\": \"system\", \"content\": \"Ты должен вызвать get_summary через TOOL_CALL и сообщить результат\"}, {\"role\": \"user\", \"content\": \"Выполни\"}]}}}",
+    "→ Ответ пользователю: \"Готово! Напоминание создано.\"",
     "",
     "Доступные инструменты:",
   ];
 
   for (const tool of tools) {
-    lines.push(`\n### ${tool.name}`);
+    const source = tool.isExternal ? `внешний:${tool.source}` : "локальный";
+    lines.push(`\n### ${tool.name} (source: ${source})`);
     lines.push(tool.description || "Нет описания");
     const schema = tool.inputSchema || {};
     const props = schema.properties || {};
@@ -137,8 +169,9 @@ function buildChatSystemPrompt(tools) {
 
   lines.push(
     "",
-    "После получения результата инструмента, если цепочка не завершена — используй TOOL_CALL для следующего шага.",
-    "Если всё готово — просто ответь пользователю по-русски."
+    "После получения результата инструмента, если задача требует ещё шагов — используй TOOL_CALL для следующего.",
+    "Если всё готово — просто ответь пользователю по-русски.",
+    "Максимум 5 шагов в цепочке."
   );
 
   return { role: "system", content: lines.join("\n") };
@@ -173,119 +206,145 @@ async function callChatLlm(messages) {
   return data.choices?.[0]?.message?.content ?? "";
 }
 
-async function processChatMessage(messages, toolRegistry, logger, sessionId = null, chainMode = false) {
-  const tools = toolRegistry.getTools();
-  const systemMsg = buildChatSystemPrompt(tools);
-
-  // Первый вызов LLM
-  const reply = await callChatLlm([systemMsg, ...messages]);
-
-  // Поиск TOOL_CALL — ищем первый { и последний } (поддержка вложенного JSON)
-  const startIdx = reply.indexOf("{");
-  const endIdx = reply.lastIndexOf("}");
-  if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-    return { reply, toolCalls: [] };
-  }
-
-  let callData;
-  try {
-    callData = JSON.parse(reply.slice(startIdx, endIdx + 1));
-  } catch {
-    return { reply, toolCalls: [] };
-  }
-
-  const { tool: toolName, arguments: args } = callData;
-  if (!toolName) {
-    return { reply, toolCalls: [] };
-  }
-
-  const tool = toolRegistry.getTool(toolName);
-  if (!tool) {
-    return { reply, toolCalls: [] };
-  }
-
-  // Для create_reminder с callback — подставляем sessionId
-  if (toolName === "create_reminder" && args?.callback && sessionId) {
-    args.callback.sessionId = args.callback.sessionId || sessionId;
-  }
-
-  // Вызов инструмента
-  logger.info(`Чат -> вызов инструмента: ${toolName}`, args);
-  let toolResult;
-  try {
-    toolResult = await tool.handler(args || {});
-  } catch (err) {
-    toolResult = {
-      content: [{ type: "text", text: `Ошибка: ${err.message}` }],
-      isError: true,
-    };
-  }
-  logger.info(`Чат -> результат ${toolName}: успешно`);
-
-  // Второй вызов LLM с результатом инструмента
-  const resultText =
-    toolResult.content?.map((c) => c.text).join("\n") ||
-    JSON.stringify(toolResult);
-
-  // В chainMode разрешаем LLM продолжать TOOL_CALL для следующих шагов
-  const followUpInstruction = chainMode
-    ? `Был вызван инструмент "${toolName}" с аргументами ${JSON.stringify(args)}.\nРезультат:\n${resultText}\n\nЕсли цепочка не завершена — используй TOOL_CALL для следующего шага. Если всё готово — ответь пользователю по-русски.`
-    : `Был вызван инструмент "${toolName}" с аргументами ${JSON.stringify(args)}.\nРезультат:\n${resultText}\n\nОтветь пользователю по-русски. Не используй TOOL_CALL.`;
-
-  const followUpMessages = [
-    systemMsg,
-    ...messages,
-    {
-      role: "system",
-      content: followUpInstruction,
-    },
-  ];
-
-  const finalReply = await callChatLlm(followUpMessages);
-
-  // В chainMode проверяем, не хочет ли LLM продолжить цепочку (TOOL_CALL в начале)
-  if (chainMode && finalReply.trim().startsWith("TOOL_CALL:")) {
-    const nextStart = finalReply.indexOf("{");
-    const nextEnd = finalReply.lastIndexOf("}");
-    if (nextStart !== -1 && nextEnd > nextStart) {
-      try {
-        JSON.parse(finalReply.slice(nextStart, nextEnd + 1));
-        // Если JSON валидный — рекурсивно продолжаем цепочку
-        const nextResult = await processChatMessage(
-          [
-            ...messages,
-            {
-              role: "system",
-              content: `Шаг "${toolName}" выполнен.\nРезультат:\n${resultText}\n\nПродолжи цепочку.`,
-            },
-          ],
-          toolRegistry,
-          logger,
-          sessionId,
-          true
-        );
-        return {
-          reply: nextResult.reply,
-          toolCalls: [
-            { tool: toolName, arguments: args || {} },
-            ...nextResult.toolCalls,
-          ],
-        };
-      } catch {
-        // Невалидный JSON внутри текста — просто возвращаем ответ
+function parseToolCalls(reply) {
+  const results = [];
+  const parts = reply.split("TOOL_CALL:");
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i].trim();
+    let depth = 0;
+    let start = -1;
+    for (let j = 0; j < part.length; j++) {
+      const ch = part[j];
+      if (ch === "{") {
+        if (depth === 0) start = j;
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          try {
+            const jsonStr = part.slice(start, j + 1);
+            const data = JSON.parse(jsonStr);
+            if (data.tool) results.push(data);
+          } catch {
+            // ignore invalid JSON
+          }
+          break;
+        }
       }
     }
   }
+  return results;
+}
 
-  return {
-    reply: finalReply,
-    toolCalls: [
-      {
+async function processChatMessage(ctx, messages, sessionId = null, maxSteps = 5) {
+  const tools = ctx.registry.getTools();
+  const systemMsg = buildChatSystemPrompt(tools);
+
+  const allToolCalls = [];
+  const historyMessages = [...messages];
+  const logger = ctx.logger;
+
+  for (let step = 0; step < maxSteps; step++) {
+    const currentMessages = [systemMsg, ...historyMessages];
+    const reply = await callChatLlm(currentMessages);
+
+    // Парсим ВСЕ TOOL_CALL блоки — поддерживаем параллельные вызовы
+    const callRequests = parseToolCalls(reply);
+    if (callRequests.length === 0) {
+      return { reply, toolCalls: allToolCalls };
+    }
+
+    // Выполняем все вызовы параллельно (независимые)
+    const stepResults = await Promise.all(callRequests.map(async (callData, idx) => {
+      const { tool: toolName, arguments: args } = callData;
+      if (!toolName) return null;
+
+      const tool = ctx.registry.getTool(toolName);
+      if (!tool) return null;
+
+      // Для create_reminder с callback — подставляем sessionId
+      if (toolName === "create_reminder" && args?.callback && sessionId) {
+        args.callback.sessionId = args.callback.sessionId || sessionId;
+      }
+
+      logger.info(`Чат -> [шаг ${step + 1}/${maxSteps}] вызов #${idx + 1}: ${toolName}`, args);
+      let toolResult;
+      try {
+        toolResult = await tool.handler(args || {});
+      } catch (err) {
+        toolResult = {
+          content: [{ type: "text", text: `Ошибка: ${err.message}` }],
+          isError: true,
+        };
+      }
+
+      const resultText = toolResult.content?.map((c) => c.text).join("\n") || JSON.stringify(toolResult);
+      const source = tool.isExternal ? `внешний:${tool.source}` : "локальный";
+
+      return {
         tool: toolName,
         arguments: args || {},
-      },
-    ],
-  };
+        source,
+        result: resultText.slice(0, 800),
+        resultText,
+        isError: toolResult.isError || false,
+      };
+    }));
+
+    // Фильтруем успешные и добавляем в общую историю
+    const validResults = stepResults.filter(Boolean);
+
+    for (let i = 0; i < validResults.length; i++) {
+      const entry = validResults[i];
+      allToolCalls.push({
+        tool: entry.tool,
+        arguments: entry.arguments,
+        source: entry.source,
+        result: entry.result,
+      });
+
+      // SSE push для каждого вызова
+      if (sessionId) {
+        try {
+          ctx.pushToChat(sessionId, {
+            type: "tool_step",
+            step: step + 1,
+            toolCall: { tool: entry.tool, arguments: entry.arguments, source: entry.source, result: entry.result },
+          });
+        } catch (sseErr) {
+          logger.warn(`SSE push error: ${sseErr.message}`);
+        }
+      }
+    }
+
+    logger.info(`Чат -> [шаг ${step + 1}/${maxSteps}] выполнено вызовов: ${validResults.length}`);
+
+    // Добавляем результаты в историю для следующей итерации
+    const assistantPart = validResults.map((r) =>
+      `- "${r.tool}" (${r.source}): ${r.result}`
+    ).join("\n");
+
+    const remainingHint = step < maxSteps - 1
+      ? "\n\nВАЖНО: Если пользователь просил несколько действий (например, сохранить заметку или создать напоминание) — выполни их ВСЕ. Parallel calls — это только часть задачи."
+      : "";
+
+    historyMessages.push(
+      { role: "assistant", content: reply },
+      {
+        role: "system",
+        content: `Шаг ${step + 1}: выполнено ${validResults.length} вызовов:\n${assistantPart}\n\nЕсли задача пользователя решена — ответь ему по-русски. Если нужно выполнить ещё один шаг — используй TOOL_CALL.${remainingHint}`,
+      }
+    );
+  }
+
+  // Достигнут лимит шагов — просим LLM подвести итог
+  const currentMessages = [
+    systemMsg,
+    ...historyMessages,
+    { role: "system", content: "Достигнут лимит шагов (5). Подведи итог пользователю по-русски." },
+  ];
+  const finalReply = await callChatLlm(currentMessages);
+  return { reply: finalReply, toolCalls: allToolCalls };
 }
 
 async function main() {

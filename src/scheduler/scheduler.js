@@ -1,8 +1,10 @@
 export class Scheduler {
-  constructor(storage, logger) {
+  constructor(storage, logger, ctx = null) {
     this.storage = storage;
     this.logger = logger;
+    this.ctx = ctx;
     this._interval = null;
+    this._runningTasks = new Set();
   }
 
   start() {
@@ -27,11 +29,18 @@ export class Scheduler {
 
     for (const task of tasks) {
       if (task.status !== "pending") continue;
+      if (this._runningTasks.has(task.id)) continue;
 
       if (task.type === "reminder" && task.executeAt <= now) {
-        await this._executeReminder(task);
+        this._runningTasks.add(task.id);
+        this._executeReminder(task).finally(() => {
+          this._runningTasks.delete(task.id);
+        });
       } else if (task.type === "periodic" && task.executeAt <= now) {
-        await this._executePeriodic(task);
+        this._runningTasks.add(task.id);
+        this._executePeriodic(task).finally(() => {
+          this._runningTasks.delete(task.id);
+        });
       }
     }
   }
@@ -45,10 +54,23 @@ export class Scheduler {
     try {
       // Если есть callback — вызываем LLM-цепочку
       if (task.callback && task.callback.type === "llm_chat" && Array.isArray(task.callback.messages)) {
-        const processChat = global.chatProcessMessage;
+        const processChat = this.ctx?.chatProcessMessage;
         if (processChat) {
-          this.logger.info(`Запуск LLM callback для ${task.id}`);
-          const result = await processChat(task.callback.messages, task.callback.sessionId || null);
+          this.logger.info(`Запуск LLM callback для ${task.id} с ${task.callback.messages.length} сообщениями`);
+          let result;
+          try {
+            result = await processChat(task.callback.messages, task.callback.sessionId || null);
+          } catch (err) {
+            this.logger.error(`Ошибка LLM callback: ${err.message}`);
+            await this.storage.update(task.id, { status: "failed", error: err.message });
+            return;
+          }
+
+          const toolCalls = result.toolCalls || [];
+          this.logger.info(`LLM callback результат: ${toolCalls.length} tool calls, reply: ${(result.reply || "").slice(0, 100)}`);
+          if (toolCalls.length === 0) {
+            this.logger.warn(`LLM callback вернул 0 tool calls — LLM не вызвала инструменты`);
+          }
 
           const summary = result.reply ? result.reply.slice(0, 200) : "OK";
           const callSummary = result.toolCalls
@@ -62,8 +84,8 @@ export class Scheduler {
           });
 
           // Пушим результат в чат через SSE
-          if (task.callback.sessionId && global.pushToChat) {
-            global.pushToChat(task.callback.sessionId, {
+          if (task.callback.sessionId && this.ctx?.pushToChat) {
+            this.ctx.pushToChat(task.callback.sessionId, {
               type: "tool_chain_result",
               toolCalls: result.toolCalls || [],
               reply: result.reply || "",
@@ -74,7 +96,7 @@ export class Scheduler {
           this.logger.info(`LLM callback для ${task.id} выполнен: ${callSummary}`);
           return;
         }
-        this.logger.warn("global.chatProcessMessage не найден, callback пропущен");
+        this.logger.warn("ctx.chatProcessMessage не найден, callback пропущен");
       }
     } catch (err) {
       this.logger.error(`Ошибка LLM callback: ${err.message}`);

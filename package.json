@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test tests/integration.test.js",
-    "test:all": "node --test tests/*.test.js"
+    "test:all": "node --test tests/*.test.js",
+    "test:orch": "node --test tests/api.orchestration.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

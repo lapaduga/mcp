@@ -1,17 +1,15 @@
 import { Router } from "express";
-import Logger from "../shared/logger.js";
 
-const logger = new Logger();
-
-export function createRouter(toolRegistry) {
+export function createRouter(ctx) {
   const router = Router();
+  const { registry, storage, logger } = ctx;
 
   router.get("/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
   router.get("/tools", (req, res) => {
-    const tools = toolRegistry.getTools().map((t) => ({
+    const tools = registry.getTools().map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -25,7 +23,7 @@ export function createRouter(toolRegistry) {
     const { name } = req.params;
     const args = req.body ?? {};
 
-    const tool = toolRegistry.getTool(name);
+    const tool = registry.getTool(name);
     if (!tool) {
       return res.status(404).json({ error: `Инструмент не найден: ${name}` });
     }
@@ -46,7 +44,6 @@ export function createRouter(toolRegistry) {
   });
 
   router.get("/scheduler/tasks", async (req, res) => {
-    const storage = global.storageInstance;
     if (!storage) {
       return res.status(503).json({ error: "Планировщик не инициализирован" });
     }
@@ -57,7 +54,7 @@ export function createRouter(toolRegistry) {
   // Админ: очистить папку заметок
   router.post("/admin/clear-notes", async (req, res) => {
     try {
-      const { readdir, unlink, rmdir, mkdir } = await import("fs/promises");
+      const { readdir, unlink } = await import("fs/promises");
       const { join, dirname } = await import("path");
       const { fileURLToPath } = await import("url");
       const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -84,16 +81,14 @@ export function createRouter(toolRegistry) {
 
   // Админ: очистить файл планировщика
   router.post("/admin/clear-scheduler", async (req, res) => {
-    try {
-      const storage = global.storageInstance;
-      if (!storage) {
-        return res.status(503).json({ error: "Планировщик не инициализирован" });
-      }
+    if (!storage) {
+      return res.status(503).json({ error: "Планировщик не инициализирован" });
+    }
 
+    try {
       const tasks = await storage.getAll();
       const deleted = tasks.length;
 
-      // Очищаем через внутренний метод — перезаписываем пустым массивом
       for (const task of tasks) {
         await storage.delete(task.id);
       }
