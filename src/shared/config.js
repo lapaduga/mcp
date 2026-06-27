@@ -54,4 +54,7 @@ export const config = Object.freeze({
   logLevel: process.env.LOG_LEVEL || "info",
   mcpTransport: process.env.MCP_TRANSPORT || "sse",
   externalMcpServers: parseExternalServers(),
+  chatApiKey: process.env.CHAT_API_KEY || "",
+  chatModel: process.env.CHAT_MODEL || "deepseek-chat",
+  chatBaseUrl: (process.env.CHAT_BASE_URL || "https://api.deepseek.com").replace(/\/+$/, ""),
 });

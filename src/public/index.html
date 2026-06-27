@@ -18,6 +18,10 @@
 
   <main>
     <aside class="sidebar" id="sidebar">
+      <div class="sidebar-tabs">
+        <button class="sidebar-tab active" data-tab="tools">🔧 Инструменты</button>
+        <button class="sidebar-tab" data-tab="chat">💬 Чат</button>
+      </div>
       <h2>Инструменты</h2>
       <div id="toolList" class="tool-list"></div>
     </aside>
@@ -55,6 +59,18 @@
 
         <div class="spinner hidden" id="spinner">Выполнение...</div>
       </div>
+
+      <div class="chat-section hidden" id="chatSection">
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-message chat-assistant">
+            Привет! Я могу вызывать инструменты. Спроси что-нибудь — например, "какая погода?" или "получи пользователя #1".
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <textarea id="chatInput" class="chat-input" rows="2" placeholder="Напишите сообщение..." maxlength="2000"></textarea>
+          <button id="chatSendBtn" class="btn primary chat-send-btn">→</button>
+        </div>
+      </div>
     </section>
 
     <aside class="sidebar scheduler-sidebar" id="schedulerSidebar">
@@ -64,10 +80,16 @@
   </main>
 
   <footer>
+    <div class="footer-toolbar">
+      <button class="btn-admin" id="btnClearNotes" title="Удалить все заметки из папки notes/">🗑 Заметки</button>
+      <button class="btn-admin" id="btnClearScheduler" title="Очистить все задачи планировщика">🗑 Планировщик</button>
+      <span id="adminStatus" class="admin-status"></span>
+    </div>
     <h3>Лог событий</h3>
     <div class="log-container" id="logContainer"></div>
   </footer>
 
   <script src="/app.js"></script>
+  <script src="/chat.js"></script>
 </body>
 </html>

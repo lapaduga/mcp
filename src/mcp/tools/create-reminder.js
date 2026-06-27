@@ -1,6 +1,6 @@
 export const name = "create_reminder";
 
-export const description = "Создаёт напоминание, которое сработает через указанное количество секунд";
+export const description = "Создаёт напоминание, которое сработает через указанное количество секунд. Поддерживает callback-цепочку для отложенного вызова других инструментов.";
 
 export const inputSchema = {
   type: "object",
@@ -15,12 +15,27 @@ export const inputSchema = {
       minimum: 1,
       maximum: 3600,
     },
+    callback: {
+      type: "object",
+      description: "НАСТОЯТЕЛЬНО РЕКОМЕНДУЕТСЯ: если пользователь просит сделать что-то с задержкой, создай callback с контекстом задачи, которая должна выполниться после срабатывания напоминания",
+      properties: {
+        type: {
+          type: "string",
+          description: "Всегда 'llm_chat'",
+          enum: ["llm_chat"],
+        },
+        messages: {
+          type: "array",
+          description: "Массив сообщений с контекстом для LLM при срабатывании. Первое сообщение должно быть system: 'Сработало отложенное задание. Выполни следующие шаги по порядку: ...'",
+        },
+      },
+    },
   },
   required: ["message", "delaySeconds"],
 };
 
 export async function handler(args) {
-  const { message, delaySeconds } = args ?? {};
+  const { message, delaySeconds, callback } = args ?? {};
   const storage = global.storageInstance;
   const scheduler = global.schedulerInstance;
 
@@ -43,13 +58,19 @@ export async function handler(args) {
     executeAt,
     status: "pending",
     createdAt: Date.now(),
+    callback: callback || null,
   });
+
+  const hasCallback = callback && callback.type === "llm_chat" && Array.isArray(callback.messages);
+  const chainText = hasCallback
+    ? `\nCallback-цепочка активирована (${callback.messages.length} сообщений контекста)`
+    : "";
 
   return {
     content: [
       {
         type: "text",
-        text: `Напоминание создано (ID: ${id})\nСработает через ${delaySeconds} сек. (${new Date(executeAt).toLocaleTimeString()})\nТекст: ${message}`,
+        text: `Напоминание создано (ID: ${id})\nСработает через ${delaySeconds} сек. (${new Date(executeAt).toLocaleTimeString()})\nТекст: ${message}${chainText}`,
       },
     ],
   };

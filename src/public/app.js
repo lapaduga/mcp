@@ -3,6 +3,7 @@ const POLL_INTERVAL = 30000;
 
 let tools = [];
 let selectedTool = null;
+window.__selectedTool = null;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -77,6 +78,7 @@ function renderToolList() {
 
 function selectTool(tool) {
   selectedTool = tool;
+  window.__selectedTool = tool;
   renderToolList();
 
   const detail = $("#toolDetail");
@@ -332,6 +334,33 @@ function init() {
 
     await callTool(selectedTool.name, values);
   });
+
+  // Админ-кнопки
+  const adminStatus = $("#adminStatus");
+
+  async function adminAction(url, label) {
+    const btn = event.target;
+    btn.disabled = true;
+    adminStatus.textContent = `⏳ ${label}...`;
+    try {
+      const res = await fetch(url, { method: "POST" });
+      const data = await res.json();
+      if (data.success) {
+        adminStatus.textContent = `✅ Удалено: ${data.deleted}`;
+        addLog(`${label}: очищено ${data.deleted}`, "success");
+      } else {
+        adminStatus.textContent = `❌ ${data.error || "ошибка"}`;
+      }
+    } catch (err) {
+      adminStatus.textContent = `❌ ${err.message}`;
+      addLog(`${label}: ${err.message}`, "error");
+    }
+    btn.disabled = false;
+    setTimeout(() => { adminStatus.textContent = ""; }, 3000);
+  }
+
+  $("#btnClearNotes").addEventListener("click", () => adminAction("/api/admin/clear-notes", "Заметки"));
+  $("#btnClearScheduler").addEventListener("click", () => adminAction("/api/admin/clear-scheduler", "Планировщик"));
 
   addLog("Приложение загружено", "info");
 }
